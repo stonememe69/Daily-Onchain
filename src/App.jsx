@@ -527,7 +527,7 @@ export default function OnchainDojo() {
       position: "relative", 
       zIndex: 1, 
       width: "100%",
-      maxWidth: "1200px", // Add max width for readability
+      maxWidth: "40000px", // Add max width for readability
       margin: "0 auto", // Center the content
       padding: "0 40px 80px", 
       height: "100vh", 
