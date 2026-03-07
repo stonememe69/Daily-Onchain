@@ -3,14 +3,19 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // ─────────────────────────────────────────────────────────────────────────────
 // GEMINI API HELPER
 // ─────────────────────────────────────────────────────────────────────────────
-async function callGemini(apiKey, prompt, systemInstruction = "") {
+// callGemini — useSearch=true enables Google Search grounding so Gemini
+// fetches REAL recent onchain events instead of hallucinating fake scenarios
+async function callGemini(apiKey, prompt, systemInstruction = "", useSearch = false) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     ...(systemInstruction && {
       systemInstruction: { parts: [{ text: systemInstruction }] },
     }),
-    generationConfig: { temperature: 0.9, maxOutputTokens: 2048 },
+    generationConfig: { temperature: useSearch ? 0.4 : 0.9, maxOutputTokens: 2048 },
+    ...(useSearch && {
+      tools: [{ googleSearch: {} }],
+    }),
   };
   const res = await fetch(url, {
     method: "POST",
@@ -22,7 +27,9 @@ async function callGemini(apiKey, prompt, systemInstruction = "") {
     throw new Error(err?.error?.message || `Gemini API error ${res.status}`);
   }
   const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  // Extract text from all parts (grounding may split across parts)
+  const parts = data.candidates?.[0]?.content?.parts || [];
+  return parts.map(p => p.text || "").join("") || "";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,6 +99,8 @@ function extractFieldsByRegex(text) {
   };
   return {
     title:         str("title")         || "Daily Onchain Challenge",
+    realEvent:     str("realEvent")     || "",
+    source:        str("source")        || "",
     problem:       str("problem")       || "Could not parse challenge. Try regenerating.",
     hints:         arr("hints"),
     keyMetrics:    arr("keyMetrics"),
@@ -136,29 +145,50 @@ function getTodayMeta(offsetDays = 0) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PROMPT BUILDERS
 // ─────────────────────────────────────────────────────────────────────────────
-function buildChallengePrompt(cat, diff, day) {
-  return `You are an expert onchain analyst creating a daily practice challenge for Day ${day}.
 
-Generate a UNIQUE, CREATIVE onchain analysis challenge with these exact specs:
-- Category: ${cat.label}
-- Difficulty: ${diff}
-- Date seed: ${todayKey()} (use this to make it feel current/recent)
-
-Return ONLY valid JSON — no markdown, no backticks, no explanation. Exactly this shape:
-{
-  "title": "Short punchy title (4-7 words)",
-  "problem": "2-3 sentence scenario. Include SPECIFIC numbers and percentages. End with one clear question.",
-  "hints": ["hint 1", "hint 2", "hint 3"],
-  "keyMetrics": ["Metric 1", "Metric 2", "Metric 3", "Metric 4"],
-  "tools": ["Tool 1", "Tool 2", "Tool 3"],
-  "teachingPoint": "One sentence: the core concept this challenge teaches"
+// SEARCH QUERY: tells Gemini what real event to find first
+function buildSearchQuery(cat, diff) {
+  const queries = {
+    btc:   `Bitcoin onchain analysis ${todayKey().slice(0,7)} miner exchange flows SOPR MVRV realized price whale accumulation`,
+    eth:   `Ethereum onchain data ${todayKey().slice(0,7)} staking withdrawals burn rate validator queue ETH flows`,
+    whale: `crypto whale wallet large transaction onchain ${todayKey().slice(0,7)} Bitcoin Ethereum accumulation exchange deposit`,
+    defi:  `DeFi protocol onchain event ${todayKey().slice(0,7)} TVL liquidation Aave Uniswap Curve exploit yield`,
+    nft:   `NFT onchain data ${todayKey().slice(0,7)} wash trading floor price manipulation collection volume`,
+    l2:    `Ethereum L2 onchain ${todayKey().slice(0,7)} Arbitrum Optimism bridge MEV sequencer rollup activity`,
+    macro: `crypto stablecoin onchain macro ${todayKey().slice(0,7)} USDT USDC flows depeg market structure`,
+  };
+  return queries[cat.id] || `crypto onchain analysis event ${todayKey().slice(0,7)}`;
 }
 
-Rules:
-- Make numbers realistic and specific (never vague like "some wallets" — say "14 wallets")
-- The scenario should feel like something that actually happened or could happen RIGHT NOW
-- Difficulty ${diff} means: ${diff === "Beginner" ? "focus on reading basic onchain signals, no complex math" : diff === "Intermediate" ? "requires connecting 2-3 onchain concepts together" : "requires deep protocol knowledge and multi-step reasoning"}
-- Category ${cat.label} examples of good angles: ${getCategoryAngles(cat.id)}`;
+// PHASE 1 prompt: search for a real event (uses Google Search grounding)
+function buildSearchPrompt(cat, diff, day) {
+  return `Search the web right now for a REAL, VERIFIABLE onchain event that happened recently (last 30-60 days) related to: ${cat.label}.
+
+Search for: ${buildSearchQuery(cat, diff)}
+
+Find ONE specific real event with:
+- Actual transaction hashes, wallet addresses, or protocol names
+- Real numbers (specific dollar amounts, percentages, token quantities)
+- A date it happened
+- A source (Glassnode, Nansen, Arkham, DeFiLlama, CryptoQuant, news article, etc.)
+
+Then format it as a practice challenge for Day ${day} (difficulty: ${diff}) in this EXACT JSON shape — no markdown, no backticks, just raw JSON:
+{
+  "title": "Short punchy title based on the real event (5-8 words)",
+  "realEvent": "One sentence: what actually happened, when, and where it was reported",
+  "source": "URL or source name where this can be verified",
+  "problem": "2-3 sentences describing the real onchain data as a puzzle. Include the actual numbers. End with one question: what does this signal?",
+  "hints": ["hint using real metric names", "hint about what to look up", "hint about the pattern"],
+  "keyMetrics": ["Exact metric name 1", "Exact metric name 2", "Exact metric name 3", "Exact metric name 4"],
+  "tools": ["Tool where you can verify this data", "Tool 2", "Tool 3"],
+  "teachingPoint": "One sentence: what onchain concept this real event teaches"
+}
+
+CRITICAL RULES:
+- The event MUST be real and verifiable — do not invent or hallucinate data
+- If you cannot find a real recent event for this exact category, find the closest real onchain event from any category in the last 60 days
+- Include the actual source URL or publication name so the user can go verify it
+- Difficulty ${diff} framing: ${diff === "Beginner" ? "present the data clearly, ask what the basic signal means" : diff === "Intermediate" ? "ask the user to connect 2-3 onchain signals to form a thesis" : "ask the user to reason through multi-step implications and edge cases"}`;
 }
 
 function getCategoryAngles(id) {
@@ -373,7 +403,8 @@ export default function OnchainDojo() {
     setChallenge(null);
 
     try {
-      const raw = await callGemini(key, buildChallengePrompt(cat, diff, day));
+      // Use Google Search grounding so Gemini finds REAL recent onchain events
+      const raw = await callGemini(key, buildSearchPrompt(cat, diff, day), "", true);
       // Robust extraction — handles truncated/malformed JSON from Gemini
       const parsed = extractJSON(raw);
       if (!parsed.title || !parsed.problem) {
@@ -623,7 +654,7 @@ export default function OnchainDojo() {
 
           <div style={{ marginTop: 20, fontSize: 10, color: "#1a3a1a", lineHeight: 1.8 }}>
             Get a free key → <span style={{ color: "#2a6a5a" }}>aistudio.google.com</span><br/>
-            Model used: <span style={{ color: "#2a5a4a" }}>gemini-2.0-flash</span> (free tier works)
+            Model used: <span style={{ color: "#2a5a4a" }}>gemini-2.5-flash-preview-04-17</span> (free tier works)
           </div>
         </div>
       </div>
@@ -729,19 +760,23 @@ export default function OnchainDojo() {
         {/* ── GENERATING STATE ── */}
         {generating && (
           <div style={{ textAlign: "center", padding: "80px 20px" }}>
-            <div style={{ fontSize: 11, color: "#2a6a2a", letterSpacing: "0.2em", marginBottom: 20 }}>
-              GEMINI IS GENERATING TODAY'S CHALLENGE<Cursor />
+            <div style={{ fontSize: 11, color: "#22c55e", letterSpacing: "0.18em", marginBottom: 8 }}>
+              SEARCHING WEB FOR REAL ONCHAIN EVENT<Cursor />
+            </div>
+            <div style={{ fontSize: 10, color: "#1a4a2a", letterSpacing: "0.1em", marginBottom: 24 }}>
+              Gemini is scanning Glassnode, Nansen, DeFiLlama, CryptoQuant, news...
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
               {[...Array(5)].map((_, i) => (
                 <div key={i} style={{
-                  width: 6, height: 6, borderRadius: "50%", background: "#00c9a7",
+                  width: 6, height: 6, borderRadius: "50%", background: "#22c55e",
                   animation: `pulse 1.2s ${i * 0.2}s infinite`,
                   opacity: 0.3,
                 }} />
               ))}
             </div>
             <div style={{ fontSize: 10, color: "#1a4a1a", marginTop: 20 }}>Category: {cat.label} · Difficulty: {diff}</div>
+            <div style={{ fontSize: 9, color: "#0d2a0d", marginTop: 8 }}>Takes 5-10 seconds — result will be a real, verifiable event</div>
             <style>{`@keyframes pulse { 0%,100%{opacity:0.2;transform:scale(1)} 50%{opacity:1;transform:scale(1.4)} }`}</style>
           </div>
         )}
@@ -825,6 +860,36 @@ export default function OnchainDojo() {
                     {challenge.problem}
                   </p>
                 </div>
+
+                {/* Real event source */}
+                {challenge.realEvent && (
+                  <div style={{
+                    background: "#07100a", border: "1px solid #1a4a25",
+                    borderLeft: "3px solid #22c55e", padding: "14px 18px",
+                    marginBottom: 12, borderRadius: "0 4px 4px 0",
+                  }}>
+                    <div style={{ fontSize: 9, color: "#22c55e", letterSpacing: "0.15em", marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ background: "#22c55e20", border: "1px solid #22c55e50", padding: "2px 8px", borderRadius: 10 }}>REAL EVENT</span>
+                      <span style={{ color: "#1a4a25" }}>verifiable onchain data</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#4a9a5a", lineHeight: 1.75, marginBottom: 8 }}>
+                      {challenge.realEvent}
+                    </div>
+                    {challenge.source && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 9, color: "#1a4a25", letterSpacing: "0.1em" }}>SOURCE:</span>
+                        {challenge.source.startsWith("http") ? (
+                          <a href={challenge.source} target="_blank" rel="noopener noreferrer"
+                            style={{ fontSize: 10, color: "#00c9a7", textDecoration: "none", borderBottom: "1px solid #00c9a730", wordBreak: "break-all" }}>
+                            {challenge.source} ↗
+                          </a>
+                        ) : (
+                          <span style={{ fontSize: 10, color: "#3a7a5a" }}>{challenge.source}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Teaching point */}
                 <div style={{
