@@ -10,7 +10,7 @@ async function callGemini(apiKey, prompt, systemInstruction = "") {
     ...(systemInstruction && {
       systemInstruction: { parts: [{ text: systemInstruction }] },
     }),
-    generationConfig: { temperature: 0.9, maxOutputTokens: 1200 },
+    generationConfig: { temperature: 0.9, maxOutputTokens: 2048 },
   };
   const res = await fetch(url, {
     method: "POST",
@@ -23,6 +23,81 @@ async function callGemini(apiKey, prompt, systemInstruction = "") {
   }
   const data = await res.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROBUST JSON EXTRACTOR
+// Handles: markdown fences, truncated strings, trailing commas, extra text
+// ─────────────────────────────────────────────────────────────────────────────
+function extractJSON(raw) {
+  // 1. Strip markdown code fences
+  let text = raw.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
+
+  // 2. Find the outermost { } to isolate JSON
+  const start = text.indexOf("{");
+  const end   = text.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    text = text.slice(start, end + 1);
+  }
+
+  // 3. Try clean parse first
+  try { return JSON.parse(text); } catch (_) {}
+
+  // 4. Auto-repair truncated JSON
+  const repaired = repairJSON(text);
+  try { return JSON.parse(repaired); } catch (_) {}
+
+  // 5. Field-by-field regex extraction as last resort
+  return extractFieldsByRegex(raw);
+}
+
+function repairJSON(text) {
+  let s = text;
+
+  // Remove trailing commas before ] or }
+  s = s.replace(/,\s*([\]}])/g, "$1");
+
+  const opens   = (s.match(/\{/g) || []).length;
+  const closes  = (s.match(/\}/g) || []).length;
+  const aopens  = (s.match(/\[/g) || []).length;
+  const acloses = (s.match(/\]/g) || []).length;
+
+  // Detect mid-string truncation: find last structural character
+  const lastStructural = Math.max(s.lastIndexOf(","), s.lastIndexOf("{"), s.lastIndexOf("["));
+  if (lastStructural !== -1) {
+    const after = s.slice(lastStructural + 1);
+    const quoteCount = (after.match(/(?<!\\)"/g) || []).length;
+    if (quoteCount % 2 !== 0) {
+      // We are mid-string — chop to last safe position
+      s = s.slice(0, lastStructural).replace(/,\s*$/, "");
+    }
+  }
+
+  // Close open arrays then objects
+  for (let i = 0; i < aopens - (s.match(/\]/g) || []).length; i++) s += "]";
+  for (let i = 0; i < opens - (s.match(/\}/g) || []).length; i++) s += "}";
+
+  return s;
+}
+
+function extractFieldsByRegex(text) {
+  const str = (field) => {
+    const m = text.match(new RegExp('"' + field + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"'));
+    return m ? m[1] : "";
+  };
+  const arr = (field) => {
+    const m = text.match(new RegExp('"' + field + '"\\s*:\\s*\\[(.*?)\\]', "s"));
+    if (!m) return [];
+    return (m[1].match(/"((?:[^"\\\\]|\\\\.)*)"/g) || []).map(s => s.slice(1, -1));
+  };
+  return {
+    title:         str("title")         || "Daily Onchain Challenge",
+    problem:       str("problem")       || "Could not parse challenge. Try regenerating.",
+    hints:         arr("hints"),
+    keyMetrics:    arr("keyMetrics"),
+    tools:         arr("tools"),
+    teachingPoint: str("teachingPoint") || "",
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,7 +147,7 @@ Generate a UNIQUE, CREATIVE onchain analysis challenge with these exact specs:
 Return ONLY valid JSON — no markdown, no backticks, no explanation. Exactly this shape:
 {
   "title": "Short punchy title (4-7 words)",
-  "problem": "A detailed 3-5 sentence scenario with SPECIFIC numbers, percentages, dollar amounts, and onchain data that makes it feel real and current. End with 1-2 clear questions to answer.",
+  "problem": "2-3 sentence scenario. Include SPECIFIC numbers and percentages. End with one clear question.",
   "hints": ["hint 1", "hint 2", "hint 3"],
   "keyMetrics": ["Metric 1", "Metric 2", "Metric 3", "Metric 4"],
   "tools": ["Tool 1", "Tool 2", "Tool 3"],
@@ -299,9 +374,11 @@ export default function OnchainDojo() {
 
     try {
       const raw = await callGemini(key, buildChallengePrompt(cat, diff, day));
-      // Strip any markdown fences
-      const cleaned = raw.replace(/```json|```/gi, "").trim();
-      const parsed  = JSON.parse(cleaned);
+      // Robust extraction — handles truncated/malformed JSON from Gemini
+      const parsed = extractJSON(raw);
+      if (!parsed.title || !parsed.problem) {
+        throw new Error("Gemini returned incomplete data. Tap Regenerate to try again.");
+      }
       const full = { ...parsed, category: cat.label, cat, diff, day, dateKey };
       saveChallenge(dateKey, full);
       setChallenge(full);
