@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // GEMINI API HELPER
 // ─────────────────────────────────────────────────────────────────────────────
 async function callGemini(apiKey, prompt, systemInstruction = "") {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     ...(systemInstruction && {
