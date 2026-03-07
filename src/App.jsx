@@ -4,17 +4,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 // GEMINI API HELPER
 // ─────────────────────────────────────────────────────────────────────────────
 async function callGemini(apiKey, prompt, systemInstruction = "") {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     ...(systemInstruction && {
       systemInstruction: { parts: [{ text: systemInstruction }] },
     }),
-    generationConfig: { 
-      temperature: 0.7,
-      maxOutputTokens: 2000,
-      responseMimeType: "application/json"
-    },
+    generationConfig: { temperature: 0.9, maxOutputTokens: 1200 },
   };
   const res = await fetch(url, {
     method: "POST",
@@ -27,75 +23,6 @@ async function callGemini(apiKey, prompt, systemInstruction = "") {
   }
   const data = await res.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-}
-
-// Helper to safely parse JSON from LLM response
-function parseGeminiJSON(raw) {
-  // Remove markdown code blocks
-  let cleaned = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-  
-  // Try to extract JSON object from response
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    cleaned = jsonMatch[0];
-  }
-  
-  // First attempt - direct parse
-  try {
-    return JSON.parse(cleaned);
-  } catch (firstError) {
-    console.warn("First JSON parse failed:", firstError.message);
-    
-    // Second attempt - fix common issues
-    try {
-      // Remove any text before first { and after last }
-      const startIdx = cleaned.indexOf('{');
-      const endIdx = cleaned.lastIndexOf('}');
-      if (startIdx !== -1 && endIdx !== -1) {
-        cleaned = cleaned.substring(startIdx, endIdx + 1);
-      }
-      
-      // Try to fix unescaped newlines and quotes in strings
-      // This regex finds string values and fixes newlines
-      cleaned = cleaned.replace(/"([^"]*?)"/g, (match, content) => {
-        // Replace actual newlines with spaces
-        const fixed = content.replace(/\n/g, ' ').replace(/\r/g, '');
-        return `"${fixed}"`;
-      });
-      
-      return JSON.parse(cleaned);
-    } catch (secondError) {
-      console.error("Second JSON parse failed:", secondError.message);
-      console.error("Cleaned JSON:", cleaned);
-      
-      // Third attempt - try to rebuild valid JSON
-      try {
-        // Extract key components using regex
-        const titleMatch = cleaned.match(/"title"\s*:\s*"([^"]+)"/);
-        const problemMatch = cleaned.match(/"problem"\s*:\s*"([^"]+)"/);
-        const hintsMatch = cleaned.match(/"hints"\s*:\s*\[(.*?)\]/);
-        const metricsMatch = cleaned.match(/"keyMetrics"\s*:\s*\[(.*?)\]/);
-        const toolsMatch = cleaned.match(/"tools"\s*:\s*\[(.*?)\]/);
-        const teachingMatch = cleaned.match(/"teachingPoint"\s*:\s*"([^"]+)"/);
-        
-        if (titleMatch && problemMatch && hintsMatch && metricsMatch && toolsMatch && teachingMatch) {
-          return {
-            title: titleMatch[1],
-            problem: problemMatch[1],
-            hints: JSON.parse(`[${hintsMatch[1]}]`),
-            keyMetrics: JSON.parse(`[${metricsMatch[1]}]`),
-            tools: JSON.parse(`[${toolsMatch[1]}]`),
-            teachingPoint: teachingMatch[1]
-          };
-        }
-      } catch (thirdError) {
-        console.error("Third JSON parse failed:", thirdError.message);
-      }
-      
-      // If all else fails, throw the original error
-      throw new Error(`Failed to parse JSON: ${firstError.message}. Check console for details.`);
-    }
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,27 +62,28 @@ function getTodayMeta(offsetDays = 0) {
 // PROMPT BUILDERS
 // ─────────────────────────────────────────────────────────────────────────────
 function buildChallengePrompt(cat, diff, day) {
-  return `Create a daily onchain analysis challenge for Day ${day}.
+  return `You are an expert onchain analyst creating a daily practice challenge for Day ${day}.
 
-Category: ${cat.label}
-Difficulty: ${diff}
-Date context: ${todayKey()}
+Generate a UNIQUE, CREATIVE onchain analysis challenge with these exact specs:
+- Category: ${cat.label}
+- Difficulty: ${diff}
+- Date seed: ${todayKey()} (use this to make it feel current/recent)
 
-Generate a challenge with this JSON structure:
+Return ONLY valid JSON — no markdown, no backticks, no explanation. Exactly this shape:
 {
-  "title": "4-7 word punchy title",
-  "problem": "3-5 sentence detailed scenario with specific numbers, percentages, and dollar amounts. Make it feel real and current. End with 1-2 clear questions.",
+  "title": "Short punchy title (4-7 words)",
+  "problem": "A detailed 3-5 sentence scenario with SPECIFIC numbers, percentages, dollar amounts, and onchain data that makes it feel real and current. End with 1-2 clear questions to answer.",
   "hints": ["hint 1", "hint 2", "hint 3"],
   "keyMetrics": ["Metric 1", "Metric 2", "Metric 3", "Metric 4"],
   "tools": ["Tool 1", "Tool 2", "Tool 3"],
-  "teachingPoint": "One sentence explaining the core concept"
+  "teachingPoint": "One sentence: the core concept this challenge teaches"
 }
 
-Requirements:
-- Use realistic, specific numbers (e.g., "14 wallets" not "some wallets")
-- Make the scenario feel current and real
-- Difficulty ${diff}: ${diff === "Beginner" ? "basic onchain signals, simple concepts" : diff === "Intermediate" ? "connect 2-3 concepts together" : "deep protocol knowledge, multi-step reasoning"}
-- Category focus (${cat.label}): ${getCategoryAngles(cat.id)}`;
+Rules:
+- Make numbers realistic and specific (never vague like "some wallets" — say "14 wallets")
+- The scenario should feel like something that actually happened or could happen RIGHT NOW
+- Difficulty ${diff} means: ${diff === "Beginner" ? "focus on reading basic onchain signals, no complex math" : diff === "Intermediate" ? "requires connecting 2-3 onchain concepts together" : "requires deep protocol knowledge and multi-step reasoning"}
+- Category ${cat.label} examples of good angles: ${getCategoryAngles(cat.id)}`;
 }
 
 function getCategoryAngles(id) {
@@ -349,57 +277,41 @@ export default function OnchainDojo() {
   }, []);
 
   // ── LOAD / GENERATE CHALLENGE ──
-  const loadOrGenerateChallenge = useCallback(async (offset, key) => {
+  const loadOrGenerateChallenge = useCallback(async (offset, key, forceNew = false) => {
     const { cat, diff, day } = getTodayMeta(offset);
     const dateKey = offset === 0 ? todayKey() : `offset_${getDayNumber() + offset}`;
 
-    // Try cache first
-    const cached = loadChallenge(dateKey);
-    if (cached) {
-      setChallenge({ ...cached, cat, diff, day });
-      return;
+    // Use cache unless forceNew — regenerate clears cache first
+    if (!forceNew) {
+      const cached = loadChallenge(dateKey);
+      if (cached) {
+        setChallenge({ ...cached, cat, diff, day });
+        return;
+      }
+    } else {
+      // Clear old cached challenge so a fresh one is saved
+      try { localStorage.removeItem(`od_challenge_${dateKey}`); } catch {}
     }
 
     setGenerating(true);
     setGenError("");
     setChallenge(null);
 
-    // Retry logic - try up to 3 times
-    let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        if (attempt > 1) {
-          console.log(`Retry attempt ${attempt}/3...`);
-          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s between retries
-        }
-        
-        const raw = await callGemini(key, buildChallengePrompt(cat, diff, day));
-        console.log("Raw API response:", raw.substring(0, 200) + "...");
-        
-        const parsed = parseGeminiJSON(raw);
-        
-        // Validate the parsed object has required fields
-        if (!parsed.title || !parsed.problem || !parsed.hints || !parsed.keyMetrics || !parsed.tools || !parsed.teachingPoint) {
-          throw new Error("Invalid challenge format - missing required fields");
-        }
-        
-        const full = { ...parsed, category: cat.label, cat, diff, day, dateKey };
-        saveChallenge(dateKey, full);
-        setChallenge(full);
-        return; // Success! Exit the retry loop
-        
-      } catch (e) {
-        lastError = e;
-        console.error(`Attempt ${attempt}/3 failed:`, e.message);
-        if (attempt === 3) {
-          // All retries failed
-          setGenError(`Failed after 3 attempts: ${e.message}. Try clicking RETRY or check your API key.`);
-        }
-      }
+    try {
+      const raw = await callGemini(key, buildChallengePrompt(cat, diff, day));
+      // Strip any markdown fences
+      const cleaned = raw.replace(/```json|```/gi, "").trim();
+      const parsed  = JSON.parse(cleaned);
+      const full = { ...parsed, category: cat.label, cat, diff, day, dateKey };
+      saveChallenge(dateKey, full);
+      setChallenge(full);
+      if (forceNew) showToast("✨ New challenge generated!");
+    } catch (e) {
+      setGenError(e.message || "Failed to generate challenge. Check your API key.");
+    } finally {
+      setGenerating(false);
     }
-    
-    setGenerating(false);
-  }, []);
+  }, [showToast]);
 
   // ── WHEN API KEY SET, LOAD CHALLENGE ──
   useEffect(() => {
@@ -505,12 +417,11 @@ export default function OnchainDojo() {
   const S = {
     root: {
       minHeight: "100vh",
-      height: "100vh",
       background: "#050508",
-      color: "#e8e8e8",
+      color: "#c8c8c8",
       fontFamily: "'Courier New', 'Lucida Console', monospace",
       position: "relative",
-      overflow: "hidden",
+      overflowX: "hidden",
     },
     grid: {
       position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0,
@@ -523,26 +434,16 @@ export default function OnchainDojo() {
       position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0,
       background: "repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px)",
     },
-    wrap: { 
-      position: "relative", 
-      zIndex: 1, 
-      width: "100%",
-      maxWidth: "40000px", // Add max width for readability
-      margin: "0 auto", // Center the content
-      padding: "0 40px 80px", 
-      height: "100vh", 
-      overflowY: "auto",
-      boxSizing: "border-box"
-    },
+    wrap: { position: "relative", zIndex: 1, maxWidth: 920, margin: "0 auto", padding: "0 20px 80px" },
   };
 
   const Btn = ({ children, onClick, disabled, variant = "ghost", style = {} }) => {
     const variants = {
-      ghost:   { bg: "none",    border: "#2a5a2a", color: "#5aba5a" },
-      primary: { bg: "linear-gradient(135deg,#003a28,#005a3a)", border: "#00c9a7", color: "#00ffc8" },
-      dim:     { bg: "none",    border: "#2a4a2a", color: "#4a8a4a" },
-      twitter: { bg: "linear-gradient(135deg,#001523,#003050)", border: "#1d9bf0", color: "#4db8ff" },
-      danger:  { bg: "none",    border: "#5a2a2a", color: "#ba5a5a" },
+      ghost:   { bg: "none",    border: "#1a3a1a", color: "#3a7a3a" },
+      primary: { bg: "linear-gradient(135deg,#003a28,#005a3a)", border: "#00c9a7", color: "#00c9a7" },
+      dim:     { bg: "none",    border: "#0d2a0d", color: "#2a5a2a" },
+      twitter: { bg: "linear-gradient(135deg,#001523,#003050)", border: "#1d9bf0", color: "#1d9bf0" },
+      danger:  { bg: "none",    border: "#3a1a1a", color: "#7a3a3a" },
     };
     const v = variants[variant];
     return (
@@ -570,7 +471,7 @@ export default function OnchainDojo() {
       placeholder={placeholder}
       style={{
         width: "100%", minHeight, background: "#060c06",
-        border: "1px solid #2a5a2a", borderRadius: 4, color: "#d8f8d8",
+        border: "1px solid #1a3a1a", borderRadius: 4, color: "#b8dab8",
         fontFamily: "'Courier New', monospace", fontSize: 12, lineHeight: 1.75,
         padding: "14px 16px", resize: "vertical", outline: "none",
         boxSizing: "border-box",
@@ -593,7 +494,7 @@ export default function OnchainDojo() {
           <div style={{ fontSize: 13, letterSpacing: "0.25em", color: "#00c9a7", fontWeight: 700, marginBottom: 6 }}>
             ONCHAIN_DOJO
           </div>
-          <div style={{ fontSize: 10, color: "#6a9a6a", letterSpacing: "0.12em" }}>
+          <div style={{ fontSize: 10, color: "#2a5a2a", letterSpacing: "0.12em" }}>
             DAILY AI-GENERATED PRACTICE · BUILD IN PUBLIC ON X
           </div>
         </div>
@@ -602,17 +503,17 @@ export default function OnchainDojo() {
           background: "#080d08", border: "1px solid #1a3a1a",
           borderRadius: 6, padding: "32px 36px", width: "100%", maxWidth: 460,
         }}>
-          <div style={{ fontSize: 9, color: "#6aaa6a", letterSpacing: "0.15em", marginBottom: 20 }}>
+          <div style={{ fontSize: 9, color: "#2a6a2a", letterSpacing: "0.15em", marginBottom: 20 }}>
             // CONNECT GEMINI API
           </div>
 
-          <div style={{ fontSize: 11, color: "#b8d8b8", lineHeight: 1.8, marginBottom: 24 }}>
+          <div style={{ fontSize: 11, color: "#3a6a3a", lineHeight: 1.8, marginBottom: 24 }}>
             Every day, Gemini AI generates a brand-new onchain analysis challenge. You analyze it, get AI feedback, then auto-generate a tweet thread to post on X.<br /><br />
             Your key is stored locally and never sent anywhere except Google's API.
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 9, color: "#6a9a6a", letterSpacing: "0.12em", marginBottom: 8 }}>
+            <div style={{ fontSize: 9, color: "#2a5a2a", letterSpacing: "0.12em", marginBottom: 8 }}>
               GEMINI API KEY
             </div>
             <input
@@ -623,7 +524,7 @@ export default function OnchainDojo() {
               onKeyDown={e => e.key === "Enter" && handleSaveKey()}
               style={{
                 width: "100%", background: "#050a05", border: "1px solid #1a3a1a",
-                borderRadius: 4, color: "#e8ffe8", fontFamily: "inherit",
+                borderRadius: 4, color: "#b8d8b8", fontFamily: "inherit",
                 fontSize: 12, padding: "10px 14px", outline: "none", boxSizing: "border-box",
               }}
               onFocus={e => e.target.style.borderColor = "#00c9a7"}
@@ -643,9 +544,9 @@ export default function OnchainDojo() {
             {testingKey ? "TESTING_KEY..." : "CONNECT_AND_START →"}
           </Btn>
 
-          <div style={{ marginTop: 20, fontSize: 10, color: "#a8c8a8", lineHeight: 1.8 }}>
+          <div style={{ marginTop: 20, fontSize: 10, color: "#1a3a1a", lineHeight: 1.8 }}>
             Get a free key → <span style={{ color: "#2a6a5a" }}>aistudio.google.com</span><br/>
-            Model used: <span style={{ color: "#2a5a4a" }}>gemini-2.5-flash</span> (free tier works)
+            Model used: <span style={{ color: "#2a5a4a" }}>gemini-2.0-flash</span> (free tier works)
           </div>
         </div>
       </div>
@@ -682,7 +583,7 @@ export default function OnchainDojo() {
               <div style={{ fontSize: 10, letterSpacing: "0.22em", color: "#00c9a7", fontWeight: 700, border: "1px solid #00c9a740", padding: "4px 10px", borderRadius: 2 }}>
                 ONCHAIN_DOJO
               </div>
-              <div style={{ fontSize: 9, color: "#8aca8a", letterSpacing: "0.1em" }}>
+              <div style={{ fontSize: 9, color: "#1a3a1a", letterSpacing: "0.1em" }}>
                 POWERED BY GEMINI AI
               </div>
             </div>
@@ -692,7 +593,7 @@ export default function OnchainDojo() {
                 <span style={{ fontSize: 16, filter: streakToday ? "none" : "grayscale(1)", opacity: streakToday ? 1 : 0.4 }}>🔥</span>
                 <div>
                   <div style={{ fontSize: 12, color: streakToday ? "#f59e0b" : "#2a4a2a", fontWeight: 700 }}>{streak}</div>
-                  <div style={{ fontSize: 8, color: "#8aca8a" }}>STREAK</div>
+                  <div style={{ fontSize: 8, color: "#1a3a1a" }}>STREAK</div>
                 </div>
               </div>
               <Btn onClick={() => setShowHistory(v => !v)} variant="dim">
@@ -710,14 +611,14 @@ export default function OnchainDojo() {
           <div style={{ background: "#060b06", border: "1px solid #0d1a0d", borderTop: "none", padding: "16px 20px" }}>
             <div style={{ fontSize: 9, color: "#00c9a7", letterSpacing: "0.15em", marginBottom: 12 }}>// COMPLETED CHALLENGES</div>
             {history.length === 0
-              ? <div style={{ fontSize: 11, color: "#8aca8a" }}>No entries yet — complete your first challenge below.</div>
+              ? <div style={{ fontSize: 11, color: "#1a3a1a" }}>No entries yet — complete your first challenge below.</div>
               : history.map((h, i) => (
                 <div key={i} style={{ display: "flex", gap: 12, padding: "5px 0", borderBottom: "1px solid #080d08", fontSize: 10, flexWrap: "wrap" }}>
-                  <span style={{ color: "#5a8a5a", minWidth: 55 }}>Day {h.day}</span>
+                  <span style={{ color: "#1a4a1a", minWidth: 55 }}>Day {h.day}</span>
                   <span style={{ color: "#00c9a7", minWidth: 70 }}>[{(h.category || "").split(" ")[0]}]</span>
                   <span style={{ color: DIFF_COLORS[h.difficulty] || "#3a6a3a", minWidth: 90 }}>{h.difficulty}</span>
-                  <span style={{ color: "#8aca8a", flex: 1 }}>{h.title}</span>
-                  <span style={{ color: "#8aca8a" }}>{h.date}</span>
+                  <span style={{ color: "#4a7a4a", flex: 1 }}>{h.title}</span>
+                  <span style={{ color: "#1a3a1a" }}>{h.date}</span>
                 </div>
               ))
             }
@@ -729,20 +630,20 @@ export default function OnchainDojo() {
           <Btn onClick={() => changeDay(-1)} style={{ padding: "6px 10px" }}>‹</Btn>
 
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 9, color: "#6a9a6a", letterSpacing: "0.14em" }}>
+            <div style={{ fontSize: 9, color: "#2a5a2a", letterSpacing: "0.14em" }}>
               {offsetDays === 0 ? `TODAY // DAY_${String(day).padStart(3,"0")}` : offsetDays > 0 ? `FUTURE // DAY_${String(day).padStart(3,"0")}` : `PAST // DAY_${String(day).padStart(3,"0")}`}
             </div>
             <div style={{ fontSize: 11, color: "#3a7a3a", marginTop: 3, display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 14 }}>{cat.emoji}</span>
               <span style={{ color: cat.color }}>{cat.label}</span>
-              <span style={{ color: "#8aca8a" }}>·</span>
+              <span style={{ color: "#1a3a1a" }}>·</span>
               <span style={{ color: DIFF_COLORS[diff] }}>{diff}</span>
             </div>
           </div>
 
-          <div style={{ fontSize: 9, color: "#5a8a5a", textAlign: "right" }}>
+          <div style={{ fontSize: 9, color: "#1a4a1a", textAlign: "right" }}>
             <div>{todayKey()}</div>
-            <div style={{ color: "#3a6a3a" }}>AI GENERATED</div>
+            <div style={{ color: "#0d2a0d" }}>AI GENERATED</div>
           </div>
 
           <Btn onClick={() => changeDay(1)} style={{ padding: "6px 10px" }}>›</Btn>
@@ -751,7 +652,7 @@ export default function OnchainDojo() {
         {/* ── GENERATING STATE ── */}
         {generating && (
           <div style={{ textAlign: "center", padding: "80px 20px" }}>
-            <div style={{ fontSize: 11, color: "#6aaa6a", letterSpacing: "0.2em", marginBottom: 20 }}>
+            <div style={{ fontSize: 11, color: "#2a6a2a", letterSpacing: "0.2em", marginBottom: 20 }}>
               GEMINI IS GENERATING TODAY'S CHALLENGE<Cursor />
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
@@ -763,7 +664,7 @@ export default function OnchainDojo() {
                 }} />
               ))}
             </div>
-            <div style={{ fontSize: 10, color: "#5a8a5a", marginTop: 20 }}>Category: {cat.label} · Difficulty: {diff}</div>
+            <div style={{ fontSize: 10, color: "#1a4a1a", marginTop: 20 }}>Category: {cat.label} · Difficulty: {diff}</div>
             <style>{`@keyframes pulse { 0%,100%{opacity:0.2;transform:scale(1)} 50%{opacity:1;transform:scale(1.4)} }`}</style>
           </div>
         )}
@@ -828,7 +729,7 @@ export default function OnchainDojo() {
                         <span style={{ fontSize: 9, padding: "2px 8px", letterSpacing: "0.12em", background: DIFF_COLORS[diff] + "15", border: `1px solid ${DIFF_COLORS[diff]}40`, color: DIFF_COLORS[diff], borderRadius: 2 }}>
                           {diff.toUpperCase()}
                         </span>
-                        <span style={{ fontSize: 9, padding: "2px 8px", letterSpacing: "0.1em", background: "#0d1a0d", border: "1px solid #1a3a1a", color: "#6a9a6a", borderRadius: 2 }}>
+                        <span style={{ fontSize: 9, padding: "2px 8px", letterSpacing: "0.1em", background: "#0d1a0d", border: "1px solid #1a3a1a", color: "#2a5a2a", borderRadius: 2 }}>
                           AI · {todayKey()}
                         </span>
                       </div>
@@ -842,7 +743,7 @@ export default function OnchainDojo() {
                   borderLeft: `3px solid ${cat.color}`, padding: "20px 24px",
                   marginBottom: 20, borderRadius: "0 4px 4px 0",
                 }}>
-                  <div style={{ fontSize: 9, color: "#6aaa6a", letterSpacing: "0.15em", marginBottom: 12 }}>// SCENARIO</div>
+                  <div style={{ fontSize: 9, color: "#2a6a2a", letterSpacing: "0.15em", marginBottom: 12 }}>// SCENARIO</div>
                   <p style={{ fontSize: 13, lineHeight: 1.85, color: "#c8c8c8", margin: 0 }}>
                     {challenge.problem}
                   </p>
@@ -861,18 +762,18 @@ export default function OnchainDojo() {
                 {/* Metrics + Tools grid */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
                   <div style={{ background: "#080d08", border: "1px solid #0d1a0d", padding: "14px 16px", borderRadius: 4 }}>
-                    <div style={{ fontSize: 9, color: "#6a9a6a", letterSpacing: "0.15em", marginBottom: 10 }}>// KEY_METRICS_TO_CHECK</div>
+                    <div style={{ fontSize: 9, color: "#2a5a2a", letterSpacing: "0.15em", marginBottom: 10 }}>// KEY_METRICS_TO_CHECK</div>
                     {(challenge.keyMetrics || []).map((m, i) => (
-                      <div key={i} style={{ fontSize: 11, color: "#8aca8a", padding: "3px 0", display: "flex", gap: 8 }}>
-                        <span style={{ color: "#5a8a5a" }}>›</span> {m}
+                      <div key={i} style={{ fontSize: 11, color: "#4a7a4a", padding: "3px 0", display: "flex", gap: 8 }}>
+                        <span style={{ color: "#1a4a1a" }}>›</span> {m}
                       </div>
                     ))}
                   </div>
                   <div style={{ background: "#080d08", border: "1px solid #0d1a0d", padding: "14px 16px", borderRadius: 4 }}>
-                    <div style={{ fontSize: 9, color: "#6a9a6a", letterSpacing: "0.15em", marginBottom: 10 }}>// TOOLS_TO_USE</div>
+                    <div style={{ fontSize: 9, color: "#2a5a2a", letterSpacing: "0.15em", marginBottom: 10 }}>// TOOLS_TO_USE</div>
                     {(challenge.tools || []).map((t, i) => (
-                      <div key={i} style={{ fontSize: 11, color: "#8aca8a", padding: "3px 0", display: "flex", gap: 8 }}>
-                        <span style={{ color: "#5a8a5a" }}>›</span> {t}
+                      <div key={i} style={{ fontSize: 11, color: "#4a7a4a", padding: "3px 0", display: "flex", gap: 8 }}>
+                        <span style={{ color: "#1a4a1a" }}>›</span> {t}
                       </div>
                     ))}
                   </div>
@@ -880,7 +781,7 @@ export default function OnchainDojo() {
 
                 {/* Hints */}
                 <button onClick={() => setHintsOpen(v => !v)} style={{
-                  background: "none", border: "1px solid #0d2a0d", color: "#6a9a6a",
+                  background: "none", border: "1px solid #0d2a0d", color: "#2a5a2a",
                   padding: "8px 16px", cursor: "pointer", fontFamily: "inherit", fontSize: 10,
                   letterSpacing: "0.1em", borderRadius: 3, marginBottom: 12, width: "100%", textAlign: "left",
                 }}>
@@ -898,7 +799,7 @@ export default function OnchainDojo() {
                 )}
 
                 <div style={{ display: "flex", gap: 10 }}>
-                  <Btn onClick={() => loadOrGenerateChallenge(offsetDays, apiKey)} variant="dim" style={{ flex: 1 }}>
+                  <Btn onClick={() => loadOrGenerateChallenge(offsetDays, apiKey, true)} variant="dim" style={{ flex: 1 }}>
                     ↺ REGENERATE
                   </Btn>
                   <Btn onClick={() => setPhase("workspace")} variant="primary" style={{ flex: 3, padding: "13px", fontSize: 11 }}>
@@ -918,9 +819,9 @@ export default function OnchainDojo() {
                 <div style={{
                   background: "#080d08", border: "1px solid #0d1a0d",
                   padding: "10px 14px", marginBottom: 20, borderRadius: 4,
-                  fontSize: 11, color: "#7aba7a", lineHeight: 1.6,
+                  fontSize: 11, color: "#3a6a3a", lineHeight: 1.6,
                 }}>
-                  <span style={{ color: "#5a8a5a", marginRight: 8 }}>// {challenge.title}</span>
+                  <span style={{ color: "#1a4a1a", marginRight: 8 }}>// {challenge.title}</span>
                   {challenge.problem.slice(0, 130)}...
                   <button onClick={() => setPhase("challenge")} style={{
                     background: "none", border: "none", color: "#00c9a7",
@@ -929,7 +830,7 @@ export default function OnchainDojo() {
                 </div>
 
                 <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 9, color: "#6aaa6a", letterSpacing: "0.15em", marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, color: "#2a6a2a", letterSpacing: "0.15em", marginBottom: 8 }}>
                     // YOUR_ANALYSIS — what does the data mean? what patterns do you see?
                   </div>
                   <Textarea
@@ -938,13 +839,13 @@ export default function OnchainDojo() {
                     placeholder={`Break down the onchain signals. Reference specific metrics. Explain what's happening and why it matters...`}
                     minHeight={160}
                   />
-                  <div style={{ textAlign: "right", fontSize: 9, color: "#8aca8a", marginTop: 4 }}>
+                  <div style={{ textAlign: "right", fontSize: 9, color: "#1a3a1a", marginTop: 4 }}>
                     {analysis.length} chars
                   </div>
                 </div>
 
                 <div style={{ marginBottom: 22 }}>
-                  <div style={{ fontSize: 9, color: "#6aaa6a", letterSpacing: "0.15em", marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, color: "#2a6a2a", letterSpacing: "0.15em", marginBottom: 8 }}>
                     // YOUR_CONCLUSION — the actionable insight or answer
                   </div>
                   <Textarea
@@ -984,7 +885,7 @@ export default function OnchainDojo() {
                     <div style={{ fontSize: 9, color: "#00c9a7", letterSpacing: "0.15em", marginBottom: 14 }}>
                       // GEMINI_MENTOR_FEEDBACK
                     </div>
-                    <div style={{ fontSize: 12, lineHeight: 1.85, color: "#c8e8c8", whiteSpace: "pre-wrap", fontFamily: "inherit" }}>
+                    <div style={{ fontSize: 12, lineHeight: 1.85, color: "#7ab87a", whiteSpace: "pre-wrap", fontFamily: "inherit" }}>
                       {feedback}
                     </div>
                   </div>
@@ -999,17 +900,17 @@ export default function OnchainDojo() {
               <div style={{ paddingTop: 24 }}>
                 {!thread ? (
                   <div style={{ textAlign: "center", padding: "60px 0" }}>
-                    <div style={{ fontSize: 11, color: "#8aca8a", letterSpacing: "0.15em", marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, color: "#1a3a1a", letterSpacing: "0.15em", marginBottom: 16 }}>
                       // NO_THREAD_YET
                     </div>
-                    <p style={{ fontSize: 12, color: "#6a9a6a" }}>Write your analysis first, then generate the thread.</p>
+                    <p style={{ fontSize: 12, color: "#2a5a2a" }}>Write your analysis first, then generate the thread.</p>
                     <Btn onClick={() => setPhase("workspace")} variant="ghost" style={{ marginTop: 16 }}>GO_TO_WORKSPACE →</Btn>
                   </div>
                 ) : (
                   <>
                     {/* Thread controls */}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
-                      <div style={{ fontSize: 9, color: "#6aaa6a", letterSpacing: "0.15em" }}>
+                      <div style={{ fontSize: 9, color: "#2a6a2a", letterSpacing: "0.15em" }}>
                         // THREAD_READY — {thread.length} TWEETS
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
@@ -1063,7 +964,7 @@ export default function OnchainDojo() {
                                 </button>
                               </div>
                             </div>
-                            <div style={{ fontSize: 12, lineHeight: 1.8, color: "#d8f8d8", whiteSpace: "pre-wrap", fontFamily: "inherit" }}>
+                            <div style={{ fontSize: 12, lineHeight: 1.8, color: "#a8c8a8", whiteSpace: "pre-wrap", fontFamily: "inherit" }}>
                               {tweet}
                             </div>
                             <div style={{ marginTop: 10 }}>
@@ -1077,7 +978,7 @@ export default function OnchainDojo() {
                     {/* Instructions */}
                     <div style={{
                       marginTop: 20, background: "#050a05", border: "1px solid #0d1a0d",
-                      padding: "14px 18px", borderRadius: 4, fontSize: 10, color: "#a8c8a8", lineHeight: 1.85,
+                      padding: "14px 18px", borderRadius: 4, fontSize: 10, color: "#2a5a2a", lineHeight: 1.85,
                     }}>
                       <div style={{ color: "#00c9a7", marginBottom: 6, letterSpacing: "0.1em" }}>// HOW_TO_POST</div>
                       [1] Click "POST TWEET 1 ↗" — X opens with Tweet 1 pre-filled<br/>
@@ -1093,14 +994,14 @@ export default function OnchainDojo() {
                       padding: "14px 18px", borderRadius: 4,
                     }}>
                       <div>
-                        <div style={{ fontSize: 9, color: "#8aca8a", letterSpacing: "0.1em" }}>TOMORROW'S CATEGORY</div>
-                        <div style={{ fontSize: 12, color: "#8aca8a", marginTop: 4 }}>
+                        <div style={{ fontSize: 9, color: "#1a3a1a", letterSpacing: "0.1em" }}>TOMORROW'S CATEGORY</div>
+                        <div style={{ fontSize: 12, color: "#4a7a4a", marginTop: 4 }}>
                           {getTodayMeta(offsetDays + 1).cat.emoji} {getTodayMeta(offsetDays + 1).cat.label}
                           <span style={{ fontSize: 10, color: DIFF_COLORS[getTodayMeta(offsetDays + 1).diff], marginLeft: 10 }}>
                             {getTodayMeta(offsetDays + 1).diff}
                           </span>
                         </div>
-                        <div style={{ fontSize: 9, color: "#8aca8a", marginTop: 2 }}>New challenge auto-generated at midnight</div>
+                        <div style={{ fontSize: 9, color: "#1a3a1a", marginTop: 2 }}>New challenge auto-generated at midnight</div>
                       </div>
                       <Btn onClick={() => changeDay(1)} variant="ghost">NEXT_DAY →</Btn>
                     </div>
@@ -1114,10 +1015,10 @@ export default function OnchainDojo() {
         {/* FOOTER */}
         <div style={{
           marginTop: 48, borderTop: "1px solid #0a140a", padding: "14px 0",
-          display: "flex", justifyContent: "space-between", fontSize: 9, color: "#8aca8a", letterSpacing: "0.08em",
+          display: "flex", justifyContent: "space-between", fontSize: 9, color: "#1a3a1a", letterSpacing: "0.08em",
         }}>
           <span>ONCHAIN_DOJO // BUILD IN PUBLIC</span>
-          <span>GEMINI-2.5-FLASH · {todayKey()}</span>
+          <span>GEMINI-2.0-FLASH · {todayKey()}</span>
         </div>
       </div>
 
